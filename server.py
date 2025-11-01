@@ -1414,6 +1414,213 @@ def get_submission_by_id(submission_id: str) -> Dict[str, Any]:
 
 
 @mcp.tool()
+def search_posts(
+    query: str,
+    subreddit: Optional[str] = None,
+    sort: str = "relevance",
+    time_filter: str = "all",
+    limit: int = 25,
+) -> Dict[str, Any]:
+    """Search for Reddit posts using a search query.
+
+    Args:
+        query: The search query/term to search for
+        subreddit: Optional subreddit to limit search to (with or without 'r/' prefix). If None, searches all of Reddit
+        sort: Sort order for results - one of: "relevance", "hot", "top", "new", "comments"
+        time_filter: Time period to filter results (e.g. "hour", "day", "week", "month", "year", "all")
+        limit: Number of posts to return (1-100)
+
+    Returns:
+        Dictionary containing structured search results with the following structure:
+        {
+            'query': str,  # The search query used
+            'subreddit': Optional[str],  # Subreddit searched (None if searching all of Reddit)
+            'sort': str,  # Sort method used
+            'time_filter': str,  # Time filter used
+            'posts': [  # List of matching posts
+                {
+                    'id': str,  # Post ID
+                    'title': str,  # Post title
+                    'author': str,  # Author's username
+                    'subreddit': str,  # Subreddit name
+                    'score': int,  # Post score (upvotes - downvotes)
+                    'upvote_ratio': float,  # Ratio of upvotes to total votes
+                    'num_comments': int,  # Number of comments
+                    'created_utc': float,  # Post creation timestamp
+                    'url': str,  # URL to the post
+                    'permalink': str,  # Relative URL to the post
+                    'is_self': bool,  # Whether it's a self (text) post
+                    'selftext': str,  # Content of self post (if any)
+                    'link_url': str,  # URL for link posts (if any)
+                    'over_18': bool,  # Whether marked as NSFW
+                    'spoiler': bool,  # Whether marked as spoiler
+                    'stickied': bool,  # Whether stickied in the subreddit
+                    'locked': bool,  # Whether comments are locked
+                    'distinguished': Optional[str],  # Distinguishing type (e.g., 'moderator')
+                    'flair': Optional[Dict],  # Post flair information if any
+                },
+                ...
+            ],
+            'metadata': {
+                'fetched_at': float,  # Timestamp when data was fetched
+                'result_count': int,  # Number of results returned
+                'search_scope': str,  # "all" or subreddit name
+            }
+        }
+
+    Raises:
+        ValueError: If query is empty, sort method is invalid, or time_filter is invalid
+        RuntimeError: For other errors during the operation
+    """
+    manager = RedditClientManager()
+    if not manager.client:
+        raise RuntimeError("Reddit client not initialized")
+
+    if not query or not isinstance(query, str) or not query.strip():
+        raise ValueError("Search query is required and cannot be empty")
+
+    valid_sort_methods = ["relevance", "hot", "top", "new", "comments"]
+    if sort not in valid_sort_methods:
+        raise ValueError(
+            f"Invalid sort method. Must be one of: {', '.join(valid_sort_methods)}"
+        )
+
+    valid_time_filters = ["hour", "day", "week", "month", "year", "all"]
+    if time_filter not in valid_time_filters:
+        raise ValueError(
+            f"Invalid time filter. Must be one of: {', '.join(valid_time_filters)}"
+        )
+
+    limit = max(1, min(100, limit))  # Ensure limit is between 1 and 100
+
+    # Clean up subreddit name if provided
+    clean_subreddit = None
+    if subreddit:
+        if not isinstance(subreddit, str):
+            raise ValueError("Subreddit name must be a string")
+        clean_subreddit = subreddit[2:] if subreddit.startswith("r/") else subreddit
+
+    try:
+        search_scope = clean_subreddit if clean_subreddit else "all"
+        logger.info(
+            f"Searching for '{query}' in {search_scope} (sort={sort}, time_filter={time_filter}, limit={limit})"
+        )
+
+        # Perform the search
+        if clean_subreddit:
+            # Search within a specific subreddit
+            subreddit_obj = manager.client.subreddit(clean_subreddit)
+            # Verify subreddit exists
+            _ = subreddit_obj.display_name
+            search_results = subreddit_obj.search(
+                query=query, sort=sort, time_filter=time_filter, limit=limit
+            )
+        else:
+            # Search all of Reddit
+            search_results = manager.client.subreddit("all").search(
+                query=query, sort=sort, time_filter=time_filter, limit=limit
+            )
+
+        # Convert generator to list
+        posts = list(search_results)
+
+        if not posts:
+            return {
+                "query": query,
+                "subreddit": clean_subreddit,
+                "sort": sort,
+                "time_filter": time_filter,
+                "posts": [],
+                "metadata": {
+                    "fetched_at": time.time(),
+                    "result_count": 0,
+                    "search_scope": search_scope,
+                },
+            }
+
+        # Format posts into structured data
+        formatted_posts = []
+        for post in posts:
+            try:
+                post_data = {
+                    "id": post.id,
+                    "title": post.title,
+                    "author": str(post.author)
+                    if hasattr(post, "author") and post.author
+                    else "[deleted]",
+                    "subreddit": str(post.subreddit)
+                    if hasattr(post, "subreddit")
+                    else "unknown",
+                    "score": getattr(post, "score", 0),
+                    "upvote_ratio": getattr(post, "upvote_ratio", 0.0),
+                    "num_comments": getattr(post, "num_comments", 0),
+                    "created_utc": post.created_utc,
+                    "url": f"https://www.reddit.com{post.permalink}"
+                    if hasattr(post, "permalink")
+                    else "",
+                    "permalink": getattr(post, "permalink", ""),
+                    "is_self": getattr(post, "is_self", False),
+                    "selftext": getattr(post, "selftext", ""),
+                    "link_url": getattr(post, "url", ""),
+                    "over_18": getattr(post, "over_18", False),
+                    "spoiler": getattr(post, "spoiler", False),
+                    "stickied": getattr(post, "stickied", False),
+                    "locked": getattr(post, "locked", False),
+                    "distinguished": getattr(post, "distinguished", None),
+                }
+
+                # Add flair information if available
+                if hasattr(post, "link_flair_text") and post.link_flair_text:
+                    post_data["flair"] = {
+                        "text": post.link_flair_text,
+                        "css_class": getattr(post, "link_flair_css_class", ""),
+                        "template_id": getattr(post, "link_flair_template_id", None),
+                        "text_color": getattr(post, "link_flair_text_color", None),
+                        "background_color": getattr(
+                            post, "link_flair_background_color", None
+                        ),
+                    }
+                else:
+                    post_data["flair"] = None
+
+                formatted_posts.append(post_data)
+
+            except Exception as post_error:
+                logger.error(
+                    f"Error processing post {getattr(post, 'id', 'unknown')}: {post_error}"
+                )
+                continue
+
+        return {
+            "query": query,
+            "subreddit": clean_subreddit,
+            "sort": sort,
+            "time_filter": time_filter,
+            "posts": formatted_posts,
+            "metadata": {
+                "fetched_at": time.time(),
+                "result_count": len(formatted_posts),
+                "search_scope": search_scope,
+            },
+        }
+
+    except Exception as e:
+        logger.error(f"Error searching for '{query}': {e}")
+        if clean_subreddit:
+            if "private" in str(e).lower():
+                raise ValueError(
+                    f"r/{clean_subreddit} is private or cannot be accessed"
+                ) from e
+            if "banned" in str(e).lower():
+                raise ValueError(
+                    f"r/{clean_subreddit} has been banned or doesn't exist"
+                ) from e
+            if "not found" in str(e).lower():
+                raise ValueError(f"r/{clean_subreddit} not found") from e
+        raise RuntimeError(f"Failed to search for posts: {e}") from e
+
+
+@mcp.tool()
 @require_write_access
 def who_am_i() -> Dict[str, Any]:
     """Get information about the currently authenticated user.
