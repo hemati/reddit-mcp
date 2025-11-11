@@ -388,6 +388,294 @@ def get_user_info(username: str) -> Dict[str, Any]:
 
 
 @mcp.tool()
+def get_user_comments(
+    username: str,
+    sort: str = "new",
+    time_filter: str = "all",
+    limit: int = 25,
+) -> Dict[str, Any]:
+    """Get a user's comment history.
+
+    Args:
+        username: The username of the Reddit user (with or without 'u/' prefix)
+        sort: Sort order for comments - one of: "new", "hot", "top", "controversial"
+        time_filter: Time period to filter comments (e.g. "hour", "day", "week", "month", "year", "all")
+        limit: Number of comments to return (1-100)
+
+    Returns:
+        Dictionary containing structured comment history with the following structure:
+        {
+            'username': str,  # The username
+            'sort': str,  # Sort method used
+            'time_filter': str,  # Time filter used
+            'comments': [  # List of comments
+                {
+                    'id': str,  # Comment ID
+                    'body': str,  # Comment text content
+                    'author': str,  # Author's username
+                    'subreddit': str,  # Subreddit where comment was posted
+                    'score': int,  # Comment score (upvotes - downvotes)
+                    'created_utc': float,  # Comment creation timestamp
+                    'permalink': str,  # Relative URL to the comment
+                    'link_title': str,  # Title of the post being commented on
+                    'link_id': str,  # ID of the post
+                    'parent_id': str,  # ID of parent comment or post
+                    'is_submitter': bool,  # Whether commenter is the post author
+                    'stickied': bool,  # Whether comment is stickied
+                    'distinguished': Optional[str],  # Distinguishing type (e.g., 'moderator')
+                    'edited': bool,  # Whether comment has been edited
+                    'gilded': int,  # Number of times gilded
+                    'controversiality': int,  # Controversy score
+                    'depth': int,  # Comment depth in thread (0 for top-level)
+                },
+                ...
+            ],
+            'metadata': {
+                'fetched_at': float,  # Timestamp when data was fetched
+                'comment_count': int,  # Number of comments returned
+            }
+        }
+
+    Raises:
+        ValueError: If username is invalid, sort method is invalid, or time_filter is invalid
+        RuntimeError: For other errors during the operation
+    """
+    manager = RedditClientManager()
+    if not manager.client:
+        raise RuntimeError("Reddit client not initialized")
+
+    # Validate username
+    if not username or not isinstance(username, str) or username.startswith((" ", "/")):
+        raise ValueError("Invalid username provided")
+
+    # Clean username
+    clean_username = username[2:] if username.startswith("u/") else username
+
+    # Validate sort method
+    valid_sort = ["new", "hot", "top", "controversial"]
+    if sort not in valid_sort:
+        raise ValueError(
+            f"Invalid sort method: {sort}. Must be one of: {', '.join(valid_sort)}"
+        )
+
+    # Validate time_filter
+    valid_time_filters = ["hour", "day", "week", "month", "year", "all"]
+    if time_filter not in valid_time_filters:
+        raise ValueError(
+            f"Invalid time_filter: {time_filter}. Must be one of: {', '.join(valid_time_filters)}"
+        )
+
+    # Clamp limit to valid range
+    limit = max(1, min(100, limit))
+
+    try:
+        logger.info(
+            f"Getting {limit} {sort} comments for u/{clean_username} (time_filter={time_filter})"
+        )
+        user = manager.client.redditor(clean_username)
+
+        # Get comments based on sort method
+        if sort == "new":
+            comments = user.comments.new(limit=limit)
+        elif sort == "hot":
+            comments = user.comments.hot(limit=limit)
+        elif sort == "top":
+            comments = user.comments.top(time_filter=time_filter, limit=limit)
+        elif sort == "controversial":
+            comments = user.comments.controversial(time_filter=time_filter, limit=limit)
+
+        # Convert to list and format
+        comments_list = list(comments)
+        formatted_comments = []
+
+        for comment in comments_list:
+            comment_data = {
+                "id": comment.id,
+                "body": comment.body,
+                "author": comment.author.name if comment.author else "[deleted]",
+                "subreddit": comment.subreddit.display_name,
+                "score": comment.score,
+                "created_utc": comment.created_utc,
+                "permalink": comment.permalink,
+                "link_title": getattr(comment, "link_title", ""),
+                "link_id": comment.link_id,
+                "parent_id": comment.parent_id,
+                "is_submitter": comment.is_submitter,
+                "stickied": comment.stickied,
+                "distinguished": comment.distinguished,
+                "edited": bool(comment.edited),
+                "gilded": getattr(comment, "gilded", 0),
+                "controversiality": getattr(comment, "controversiality", 0),
+                "depth": getattr(comment, "depth", 0),
+            }
+            formatted_comments.append(comment_data)
+
+        return {
+            "username": clean_username,
+            "sort": sort,
+            "time_filter": time_filter,
+            "comments": formatted_comments,
+            "metadata": {
+                "fetched_at": time.time(),
+                "comment_count": len(formatted_comments),
+            },
+        }
+
+    except Exception as e:
+        logger.error(f"Error getting comments for u/{clean_username}: {e}")
+        if "NOT_FOUND" in str(e) or "USER_DOESNT_EXIST" in str(e):
+            raise ValueError(f"User u/{clean_username} not found") from e
+        raise RuntimeError(f"Failed to get user comments: {e}") from e
+
+
+@mcp.tool()
+def get_user_posts(
+    username: str,
+    sort: str = "new",
+    time_filter: str = "all",
+    limit: int = 25,
+) -> Dict[str, Any]:
+    """Get a user's post/submission history.
+
+    Args:
+        username: The username of the Reddit user (with or without 'u/' prefix)
+        sort: Sort order for posts - one of: "new", "hot", "top", "controversial"
+        time_filter: Time period to filter posts (e.g. "hour", "day", "week", "month", "year", "all")
+        limit: Number of posts to return (1-100)
+
+    Returns:
+        Dictionary containing structured post history with the following structure:
+        {
+            'username': str,  # The username
+            'sort': str,  # Sort method used
+            'time_filter': str,  # Time filter used
+            'posts': [  # List of posts
+                {
+                    'id': str,  # Post ID
+                    'title': str,  # Post title
+                    'author': str,  # Author's username
+                    'subreddit': str,  # Subreddit name
+                    'score': int,  # Post score (upvotes - downvotes)
+                    'upvote_ratio': float,  # Ratio of upvotes to total votes
+                    'num_comments': int,  # Number of comments
+                    'created_utc': float,  # Post creation timestamp
+                    'url': str,  # Full URL to the post
+                    'permalink': str,  # Relative URL to the post
+                    'is_self': bool,  # Whether it's a self (text) post
+                    'selftext': str,  # Content of self post (if any)
+                    'link_url': str,  # URL for link posts (if any)
+                    'domain': str,  # Domain of the linked content
+                    'over_18': bool,  # Whether marked as NSFW
+                    'spoiler': bool,  # Whether marked as spoiler
+                    'stickied': bool,  # Whether stickied in the subreddit
+                    'locked': bool,  # Whether comments are locked
+                    'distinguished': Optional[str],  # Distinguishing type (e.g., 'moderator')
+                    'gilded': int,  # Number of times gilded
+                },
+                ...
+            ],
+            'metadata': {
+                'fetched_at': float,  # Timestamp when data was fetched
+                'post_count': int,  # Number of posts returned
+            }
+        }
+
+    Raises:
+        ValueError: If username is invalid, sort method is invalid, or time_filter is invalid
+        RuntimeError: For other errors during the operation
+    """
+    manager = RedditClientManager()
+    if not manager.client:
+        raise RuntimeError("Reddit client not initialized")
+
+    # Validate username
+    if not username or not isinstance(username, str) or username.startswith((" ", "/")):
+        raise ValueError("Invalid username provided")
+
+    # Clean username
+    clean_username = username[2:] if username.startswith("u/") else username
+
+    # Validate sort method
+    valid_sort = ["new", "hot", "top", "controversial"]
+    if sort not in valid_sort:
+        raise ValueError(
+            f"Invalid sort method: {sort}. Must be one of: {', '.join(valid_sort)}"
+        )
+
+    # Validate time_filter
+    valid_time_filters = ["hour", "day", "week", "month", "year", "all"]
+    if time_filter not in valid_time_filters:
+        raise ValueError(
+            f"Invalid time_filter: {time_filter}. Must be one of: {', '.join(valid_time_filters)}"
+        )
+
+    # Clamp limit to valid range
+    limit = max(1, min(100, limit))
+
+    try:
+        logger.info(
+            f"Getting {limit} {sort} posts for u/{clean_username} (time_filter={time_filter})"
+        )
+        user = manager.client.redditor(clean_username)
+
+        # Get posts based on sort method
+        if sort == "new":
+            posts = user.submissions.new(limit=limit)
+        elif sort == "hot":
+            posts = user.submissions.hot(limit=limit)
+        elif sort == "top":
+            posts = user.submissions.top(time_filter=time_filter, limit=limit)
+        elif sort == "controversial":
+            posts = user.submissions.controversial(time_filter=time_filter, limit=limit)
+
+        # Convert to list and format
+        posts_list = list(posts)
+        formatted_posts = []
+
+        for post in posts_list:
+            post_data = {
+                "id": post.id,
+                "title": post.title,
+                "author": post.author.name if post.author else "[deleted]",
+                "subreddit": post.subreddit.display_name,
+                "score": post.score,
+                "upvote_ratio": post.upvote_ratio,
+                "num_comments": post.num_comments,
+                "created_utc": post.created_utc,
+                "url": f"https://reddit.com{post.permalink}",
+                "permalink": post.permalink,
+                "is_self": post.is_self,
+                "selftext": post.selftext if post.is_self else "",
+                "link_url": post.url if not post.is_self else "",
+                "domain": post.domain,
+                "over_18": post.over_18,
+                "spoiler": post.spoiler,
+                "stickied": post.stickied,
+                "locked": post.locked,
+                "distinguished": post.distinguished,
+                "gilded": getattr(post, "gilded", 0),
+            }
+            formatted_posts.append(post_data)
+
+        return {
+            "username": clean_username,
+            "sort": sort,
+            "time_filter": time_filter,
+            "posts": formatted_posts,
+            "metadata": {
+                "fetched_at": time.time(),
+                "post_count": len(formatted_posts),
+            },
+        }
+
+    except Exception as e:
+        logger.error(f"Error getting posts for u/{clean_username}: {e}")
+        if "NOT_FOUND" in str(e) or "USER_DOESNT_EXIST" in str(e):
+            raise ValueError(f"User u/{clean_username} not found") from e
+        raise RuntimeError(f"Failed to get user posts: {e}") from e
+
+
+@mcp.tool()
 def get_top_posts(
     subreddit: str, time_filter: str = "week", limit: int = 10
 ) -> Dict[str, Any]:
