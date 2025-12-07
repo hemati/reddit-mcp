@@ -1193,6 +1193,70 @@ def reply_to_comment(
 
 
 @mcp.tool()
+@require_write_access
+def join_subreddit(subreddit_name: str, unsubscribe: bool = False) -> Dict[str, Any]:
+    """Join (subscribe to) or leave (unsubscribe from) a subreddit.
+
+    Args:
+        subreddit_name: Name of the subreddit to join/leave (with or without 'r/' prefix)
+        unsubscribe: If True, leave the subreddit instead of joining
+
+    Returns:
+        Dictionary containing information about the action and subreddit
+
+    Raises:
+        ValueError: If subreddit name is invalid or subreddit not found
+        RuntimeError: For other errors during the operation
+    """
+    manager = RedditClientManager()
+    if not manager.client:
+        raise RuntimeError("Reddit client not initialized")
+
+    if not subreddit_name or not isinstance(subreddit_name, str):
+        raise ValueError("Subreddit name is required")
+
+    # Clean up subreddit name
+    clean_name = subreddit_name[2:] if subreddit_name.startswith("r/") else subreddit_name
+    action = "leave" if unsubscribe else "join"
+
+    try:
+        logger.info(f"Attempting to {action} r/{clean_name}")
+        sub = manager.client.subreddit(clean_name)
+
+        # Verify subreddit exists
+        try:
+            display_name = sub.display_name
+        except Exception as e:
+            raise ValueError(f"Subreddit r/{clean_name} not found or inaccessible") from e
+
+        if unsubscribe:
+            sub.unsubscribe()
+            message = f"Successfully unsubscribed from r/{display_name}"
+        else:
+            sub.subscribe()
+            message = f"Successfully subscribed to r/{display_name}"
+
+        logger.info(message)
+
+        return {
+            "success": True,
+            "action": action,
+            "subreddit": display_name,
+            "message": message,
+            "metadata": {
+                "timestamp": time.time(),
+                "subscribers": getattr(sub, "subscribers", None)
+            }
+        }
+
+    except Exception as e:
+        logger.error(f"Error {action}ing r/{clean_name}: {e}")
+        if isinstance(e, (ValueError, RuntimeError)):
+            raise
+        raise RuntimeError(f"Failed to {action} r/{clean_name}: {e}") from e
+
+
+@mcp.tool()
 def get_submission_by_url(url: str) -> Dict[str, Any]:
     """Get a Reddit submission by its URL.
 
