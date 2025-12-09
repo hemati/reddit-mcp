@@ -1257,11 +1257,12 @@ def join_subreddit(subreddit_name: str, unsubscribe: bool = False) -> Dict[str, 
 
 
 @mcp.tool()
-def get_submission_by_url(url: str) -> Dict[str, Any]:
+def get_submission_by_url(url: str, include_comments: bool = False) -> Dict[str, Any]:
     """Get a Reddit submission by its URL.
 
     Args:
         url: The URL of the Reddit submission to retrieve
+        include_comments: If True, load and return the full comment forest for the post
 
     Returns:
         Dictionary containing structured submission information with the following structure:
@@ -1291,6 +1292,7 @@ def get_submission_by_url(url: str) -> Dict[str, Any]:
             'media': Optional[Dict],  # Media information if any
             'preview': Optional[Dict],  # Preview information if available
             'awards': List[Dict],  # List of awards received
+            'comments': Optional[List[Dict]],  # present if include_comments is True
             'metadata': {
                 'fetched_at': float,  # Timestamp when data was fetched
                 'subreddit_id': str,  # Subreddit full ID
@@ -1324,7 +1326,7 @@ def get_submission_by_url(url: str) -> Dict[str, Any]:
         raise ValueError("URL must start with http:// or https://")
 
     try:
-        logger.info(f"Getting submission from URL: {url}")
+        logger.info(f"Getting submission from URL: {url} (include_comments={include_comments})")
 
         # Create submission from URL
         submission = manager.client.submission(url=url)
@@ -1394,6 +1396,27 @@ def get_submission_by_url(url: str) -> Dict[str, Any]:
                 for award in submission.all_awardings
             ]
 
+        # Add comments if requested
+        if include_comments:
+            try:
+                # Resolve all MoreComments to get the complete tree
+                submission.comments.replace_more(limit=None)
+
+                top_level_comments = [
+                    c
+                    for c in submission.comments
+                    if isinstance(c, praw.models.Comment)
+                ]
+
+                submission_data["comments"] = [
+                    _serialize_comment_tree(c) for c in top_level_comments
+                ]
+            except Exception as comments_error:
+                logger.error(
+                    f"Error loading comments for submission {submission.id}: {comments_error}"
+                )
+                submission_data["comments"] = []
+
         # Add metadata
         submission_data["metadata"] = {
             "fetched_at": time.time(),
@@ -1439,11 +1462,12 @@ def get_submission_by_url(url: str) -> Dict[str, Any]:
 
 
 @mcp.tool()
-def get_submission_by_id(submission_id: str) -> Dict[str, Any]:
+def get_submission_by_id(submission_id: str, include_comments: bool = False) -> Dict[str, Any]:
     """Get a Reddit submission by its ID.
 
     Args:
         submission_id: The ID of the Reddit submission to retrieve (can be full URL or just ID)
+        include_comments: If True, load and return the full comment forest for the post
 
     Returns:
         Dictionary containing structured submission information with the following structure:
@@ -1473,6 +1497,7 @@ def get_submission_by_id(submission_id: str) -> Dict[str, Any]:
             'media': Optional[Dict],  # Media information if any
             'preview': Optional[Dict],  # Preview information if available
             'awards': List[Dict],  # List of awards received
+            'comments': Optional[List[Dict]],  # present if include_comments is True
             'metadata': {
                 'fetched_at': float,  # Timestamp when data was fetched
                 'subreddit_id': str,  # Subreddit full ID
@@ -1506,7 +1531,7 @@ def get_submission_by_id(submission_id: str) -> Dict[str, Any]:
     try:
         # Clean up the submission_id if it's a full URL or permalink
         clean_submission_id = _extract_reddit_id(submission_id)
-        logger.info(f"Getting submission with ID: {clean_submission_id}")
+        logger.info(f"Getting submission with ID: {clean_submission_id} (include_comments={include_comments})")
 
         # Create submission from ID
         submission = manager.client.submission(id=clean_submission_id)
@@ -1577,6 +1602,27 @@ def get_submission_by_id(submission_id: str) -> Dict[str, Any]:
                 }
                 for award in submission.all_awardings
             ]
+
+        # Add comments if requested
+        if include_comments:
+            try:
+                # Resolve all MoreComments to get the complete tree
+                submission.comments.replace_more(limit=None)
+
+                top_level_comments = [
+                    c
+                    for c in submission.comments
+                    if isinstance(c, praw.models.Comment)
+                ]
+
+                submission_data["comments"] = [
+                    _serialize_comment_tree(c) for c in top_level_comments
+                ]
+            except Exception as comments_error:
+                logger.error(
+                    f"Error loading comments for submission {submission.id}: {comments_error}"
+                )
+                submission_data["comments"] = []
 
         # Add metadata
         submission_data["metadata"] = {
