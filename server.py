@@ -423,6 +423,7 @@ def get_top_posts(
     time_filter: str = "week",
     limit: int = 10,
     include_comments: bool = False,
+    comment_replace_more_limit: int = 0,
 ) -> Dict[str, Any]:
     """Get top posts from a subreddit.
 
@@ -431,6 +432,7 @@ def get_top_posts(
         time_filter: Time period to filter posts (e.g. "day", "week", "month", "year", "all")
         limit: Number of posts to fetch (1-100)
         include_comments: If True, load and return the full comment forest for each post
+        comment_replace_more_limit: Limit for replacing "MoreComments" objects (0 for none, None for all)
 
     Returns:
         Dictionary containing structured post information with the following structure:
@@ -555,7 +557,8 @@ def get_top_posts(
                 if include_comments:
                     try:
                         # Resolve all MoreComments to get the complete tree
-                        post.comments.replace_more(limit=None)
+                        # limit=0 removes no MoreComments, limit=None removes all (slow!)
+                        post.comments.replace_more(limit=comment_replace_more_limit)
 
                         top_level_comments = [
                             c
@@ -567,8 +570,8 @@ def get_top_posts(
                             _serialize_comment_tree(c) for c in top_level_comments
                         ]
                     except Exception as comments_error:
-                        logger.error(
-                            f"Error loading comments for post {getattr(post, 'id', 'unknown')}: {comments_error}"
+                        logger.exception(
+                            f"Error loading comments for post {getattr(post, 'id', 'unknown')}"
                         )
                         post_data["comments"] = []
 
@@ -1046,7 +1049,7 @@ def reply_to_post(
             )
 
         except Exception as e:
-            logger.error(f"Failed to access post {clean_post_id}: {e}")
+            logger.exception(f"Failed to access post {clean_post_id}: {e}")
             raise ValueError(f"Post {clean_post_id} not found or inaccessible") from e
 
         # If subreddit was provided, verify we're in the right place
@@ -1083,7 +1086,7 @@ def reply_to_post(
             }
 
         except Exception as reply_error:
-            logger.error(f"Failed to create reply: {reply_error}")
+            logger.exception(f"Failed to create reply: {reply_error}")
             if "RATELIMIT" in str(reply_error).upper():
                 raise RuntimeError(
                     "You're doing that too much. Please wait before replying again."
@@ -1095,7 +1098,7 @@ def reply_to_post(
             raise RuntimeError(f"Failed to post reply: {reply_error}") from reply_error
 
     except Exception as e:
-        logger.error(f"Error in reply_to_post for ID {post_id}: {e}")
+        logger.exception(f"Error in reply_to_post for ID {post_id}: {e}")
         if isinstance(e, (ValueError, RuntimeError)):
             raise
         raise RuntimeError(f"Failed to create comment reply: {e}") from e
@@ -1153,8 +1156,20 @@ def reply_to_comment(
             )
 
         except Exception as e:
-            logger.error(f"Failed to access comment {clean_comment_id}: {e}")
+            logger.exception(f"Failed to access comment {clean_comment_id}: {e}")
             raise ValueError(f"Comment {clean_comment_id} not found or inaccessible") from e
+
+        # Check if the parent submission is archived or locked
+        try:
+            submission = comment.submission
+            if getattr(submission, "archived", False):
+                raise ValueError("Cannot reply to a comment in an archived thread")
+            if getattr(submission, "locked", False):
+                raise ValueError("Cannot reply to a comment in a locked thread")
+        except ValueError:
+            raise
+        except Exception as check_error:
+            logger.debug(f"Could not check submission status: {check_error}")
 
         # Create the reply
         logger.info(f"Posting reply with content length: {len(content)} characters")
@@ -1174,7 +1189,7 @@ def reply_to_comment(
             }
 
         except Exception as reply_error:
-            logger.error(f"Failed to create reply: {reply_error}")
+            logger.exception(f"Failed to create reply: {reply_error}")
             if "RATELIMIT" in str(reply_error).upper():
                 raise RuntimeError(
                     "You're doing that too much. Please wait before replying again."
@@ -1186,7 +1201,7 @@ def reply_to_comment(
             raise RuntimeError(f"Failed to post reply: {reply_error}") from reply_error
 
     except Exception as e:
-        logger.error(f"Error in reply_to_comment for ID {comment_id}: {e}")
+        logger.exception(f"Error in reply_to_comment for ID {comment_id}: {e}")
         if isinstance(e, (ValueError, RuntimeError)):
             raise
         raise RuntimeError(f"Failed to create comment reply: {e}") from e
