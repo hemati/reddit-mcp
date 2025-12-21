@@ -304,6 +304,35 @@ def _analyze_comment_impact(score: int, is_edited: bool, is_op: bool) -> str:
     return "\n  - ".join(insights or ["Standard engagement with discussion"])
 
 
+def _serialize_comment_tree(comment: praw.models.Comment) -> Dict[str, Any]:
+    """Serialize a PRAW comment into a JSON-serializable tree structure."""
+    try:
+        replies = []
+        if getattr(comment, "replies", None):
+            replies = [
+                _serialize_comment_tree(reply)
+                for reply in comment.replies
+                if isinstance(reply, praw.models.Comment)
+            ]
+    except Exception as e:
+        logger.error(f"Error while serializing replies for comment {getattr(comment, 'id', 'unknown')}: {e}")
+        replies = []
+
+    return {
+        "id": comment.id,
+        "author": str(comment.author) if comment.author else "[deleted]",
+        "body": getattr(comment, "body", ""),
+        "score": getattr(comment, "score", 0),
+        "created_utc": getattr(comment, "created_utc", 0.0),
+        "permalink": getattr(comment, "permalink", ""),
+        "is_submitter": getattr(comment, "is_submitter", False),
+        "distinguished": getattr(comment, "distinguished", None),
+        "stickied": getattr(comment, "stickied", False),
+        "locked": getattr(comment, "locked", False),
+        "replies": replies,
+    }
+
+
 @mcp.tool()
 def get_user_info(username: str) -> Dict[str, Any]:
     """Get information about a Reddit user.
@@ -389,7 +418,11 @@ def get_user_info(username: str) -> Dict[str, Any]:
 
 @mcp.tool()
 def get_top_posts(
-    subreddit: str, time_filter: str = "week", limit: int = 10
+    subreddit: str,
+    time_filter: str = "week",
+    limit: int = 10,
+    include_comments: bool = False,
+    comment_replace_more_limit: int = 0,
 ) -> Dict[str, Any]:
     """Get top posts from a subreddit.
 
@@ -397,6 +430,8 @@ def get_top_posts(
         subreddit: Name of the subreddit (with or without 'r/' prefix)
         time_filter: Time period to filter posts (e.g. "day", "week", "month", "year", "all")
         limit: Number of posts to fetch (1-100)
+        include_comments: If True, load and return the full comment forest for each post
+        comment_replace_more_limit: Limit for replacing "MoreComments" objects (0 for none, None for all)
 
     Returns:
         Dictionary containing structured post information with the following structure:
@@ -423,6 +458,7 @@ def get_top_posts(
                     'locked': bool,  # Whether comments are locked
                     'distinguished': Optional[str],  # Distinguishing type (e.g., 'moderator')
                     'flair': Optional[Dict],  # Post flair information if any
+                    'comments': Optional[List[Dict]],  # present if include_comments is True
                 },
                 ...
             ],
@@ -456,7 +492,8 @@ def get_top_posts(
 
     try:
         logger.info(
-            f"Getting top {limit} posts from r/{clean_subreddit} (time_filter={time_filter})"
+            f"Getting top {limit} posts from r/{clean_subreddit} "
+            f"(time_filter={time_filter}, include_comments={include_comments})"
         )
 
         # Get the subreddit
@@ -481,19 +518,15 @@ def get_top_posts(
         for post in posts:
             try:
                 # Get post data with error handling for each field
-                post_data = {
+                post_data: Dict[str, Any] = {
                     "id": post.id,
                     "title": post.title,
-                    "author": str(post.author)
-                    if hasattr(post, "author") and post.author
-                    else "[deleted]",
+                    "author": str(post.author) if getattr(post, "author", None) else "[deleted]",
                     "score": getattr(post, "score", 0),
                     "upvote_ratio": getattr(post, "upvote_ratio", 0.0),
                     "num_comments": getattr(post, "num_comments", 0),
                     "created_utc": post.created_utc,
-                    "url": f"https://www.reddit.com{post.permalink}"
-                    if hasattr(post, "permalink")
-                    else "",
+                    "url": f"https://www.reddit.com{post.permalink}" if hasattr(post, "permalink") else "",
                     "permalink": getattr(post, "permalink", ""),
                     "is_self": getattr(post, "is_self", False),
                     "selftext": getattr(post, "selftext", ""),
@@ -519,6 +552,28 @@ def get_top_posts(
                 else:
                     post_data["flair"] = None
 
+                # Add comments if requested
+                if include_comments:
+                    try:
+                        # Resolve all MoreComments to get the complete tree
+                        # limit=0 removes no MoreComments, limit=None removes all (slow!)
+                        post.comments.replace_more(limit=comment_replace_more_limit)
+
+                        top_level_comments = [
+                            c
+                            for c in post.comments
+                            if isinstance(c, praw.models.Comment)
+                        ]
+
+                        post_data["comments"] = [
+                            _serialize_comment_tree(c) for c in top_level_comments
+                        ]
+                    except Exception as comments_error:
+                        logger.exception(
+                            f"Error loading comments for post {getattr(post, 'id', 'unknown')}"
+                        )
+                        post_data["comments"] = []
+
                 formatted_posts.append(post_data)
 
             except Exception as post_error:
@@ -531,7 +586,10 @@ def get_top_posts(
             "subreddit": clean_subreddit,
             "time_filter": time_filter,
             "posts": formatted_posts,
-            "metadata": {"fetched_at": time.time(), "post_count": len(formatted_posts)},
+            "metadata": {
+                "fetched_at": time.time(),
+                "post_count": len(formatted_posts),
+            },
         }
 
     except Exception as e:
@@ -990,7 +1048,7 @@ def reply_to_post(
             )
 
         except Exception as e:
-            logger.error(f"Failed to access post {clean_post_id}: {e}")
+            logger.exception(f"Failed to access post {clean_post_id}: {e}")
             raise ValueError(f"Post {clean_post_id} not found or inaccessible") from e
 
         # If subreddit was provided, verify we're in the right place
@@ -1027,7 +1085,7 @@ def reply_to_post(
             }
 
         except Exception as reply_error:
-            logger.error(f"Failed to create reply: {reply_error}")
+            logger.exception(f"Failed to create reply: {reply_error}")
             if "RATELIMIT" in str(reply_error).upper():
                 raise RuntimeError(
                     "You're doing that too much. Please wait before replying again."
@@ -1039,18 +1097,187 @@ def reply_to_post(
             raise RuntimeError(f"Failed to post reply: {reply_error}") from reply_error
 
     except Exception as e:
-        logger.error(f"Error in reply_to_post for ID {post_id}: {e}")
+        logger.exception(f"Error in reply_to_post for ID {post_id}: {e}")
         if isinstance(e, (ValueError, RuntimeError)):
             raise
         raise RuntimeError(f"Failed to create comment reply: {e}") from e
 
 
 @mcp.tool()
-def get_submission_by_url(url: str) -> Dict[str, Any]:
+@require_write_access
+def reply_to_comment(
+    comment_id: str, content: str
+) -> Dict[str, Any]:
+    """Post a reply to an existing Reddit comment.
+
+    Args:
+        comment_id: The ID of the comment to reply to (can be full URL, permalink, or just ID)
+        content: The content of the reply (1-10000 characters)
+
+    Returns:
+        Dictionary containing information about the created reply and parent comment
+
+    Raises:
+        ValueError: If input validation fails or comment is not found
+        RuntimeError: For other errors during reply creation
+    """
+    manager = RedditClientManager()
+    if not manager.client:
+        raise RuntimeError("Reddit client not initialized")
+
+    # Input validation
+    if not comment_id or not isinstance(comment_id, str):
+        raise ValueError("Comment ID is required")
+    if not content or not isinstance(content, str):
+        raise ValueError("Reply content is required")
+    if len(content) < 1 or len(content) > 10000:
+        raise ValueError("Reply must be between 1 and 10000 characters")
+
+    try:
+        # Clean up the comment_id if it's a full URL or permalink
+        clean_comment_id = _extract_reddit_id(comment_id)
+        logger.info(f"Creating reply to comment ID: {clean_comment_id}")
+
+        # Get the comment object
+        comment = manager.client.comment(id=clean_comment_id)
+
+        # Verify the comment exists by accessing its attributes
+        try:
+            # Force fetch to verify existence
+            _ = comment.body
+            comment_author = getattr(comment, "author", None)
+            comment_subreddit = comment.subreddit
+
+            logger.info(
+                f"Replying to comment: "
+                f"Author: {comment_author}, "
+                f"Subreddit: r/{comment_subreddit.display_name}"
+            )
+
+        except Exception as e:
+            logger.exception(f"Failed to access comment {clean_comment_id}: {e}")
+            raise ValueError(f"Comment {clean_comment_id} not found or inaccessible") from e
+
+        # Check if the parent submission is archived or locked
+        try:
+            submission = comment.submission
+            if getattr(submission, "archived", False):
+                raise ValueError("Cannot reply to a comment in an archived thread")
+            if getattr(submission, "locked", False):
+                raise ValueError("Cannot reply to a comment in a locked thread")
+        except ValueError:
+            raise
+        except Exception as check_error:
+            logger.debug(f"Could not check submission status: {check_error}")
+
+        # Create the reply
+        logger.info(f"Posting reply with content length: {len(content)} characters")
+        try:
+            reply = comment.reply(body=content)
+            logger.info(f"Reply created successfully: {reply.id}")
+
+            return {
+                "reply": _format_comment(reply),
+                "parent_comment": _format_comment(comment),
+                "metadata": {
+                    "created_at": _format_timestamp(time.time()),
+                    "reply_id": reply.id,
+                    "parent_id": clean_comment_id,
+                    "subreddit": comment_subreddit.display_name,
+                },
+            }
+
+        except Exception as reply_error:
+            logger.exception(f"Failed to create reply: {reply_error}")
+            if "RATELIMIT" in str(reply_error).upper():
+                raise RuntimeError(
+                    "You're doing that too much. Please wait before replying again."
+                ) from reply_error
+            if "TOO_OLD" in str(reply_error):
+                raise RuntimeError(
+                    "This thread is archived and cannot be replied to"
+                ) from reply_error
+            raise RuntimeError(f"Failed to post reply: {reply_error}") from reply_error
+
+    except Exception as e:
+        logger.exception(f"Error in reply_to_comment for ID {comment_id}: {e}")
+        if isinstance(e, (ValueError, RuntimeError)):
+            raise
+        raise RuntimeError(f"Failed to create comment reply: {e}") from e
+
+
+@mcp.tool()
+@require_write_access
+def join_subreddit(subreddit_name: str, unsubscribe: bool = False) -> Dict[str, Any]:
+    """Join (subscribe to) or leave (unsubscribe from) a subreddit.
+
+    Args:
+        subreddit_name: Name of the subreddit to join/leave (with or without 'r/' prefix)
+        unsubscribe: If True, leave the subreddit instead of joining
+
+    Returns:
+        Dictionary containing information about the action and subreddit
+
+    Raises:
+        ValueError: If subreddit name is invalid or subreddit not found
+        RuntimeError: For other errors during the operation
+    """
+    manager = RedditClientManager()
+    if not manager.client:
+        raise RuntimeError("Reddit client not initialized")
+
+    if not subreddit_name or not isinstance(subreddit_name, str):
+        raise ValueError("Subreddit name is required")
+
+    # Clean up subreddit name
+    clean_name = subreddit_name[2:] if subreddit_name.startswith("r/") else subreddit_name
+    action = "leave" if unsubscribe else "join"
+
+    try:
+        logger.info(f"Attempting to {action} r/{clean_name}")
+        sub = manager.client.subreddit(clean_name)
+
+        # Verify subreddit exists
+        try:
+            display_name = sub.display_name
+        except Exception as e:
+            raise ValueError(f"Subreddit r/{clean_name} not found or inaccessible") from e
+
+        if unsubscribe:
+            sub.unsubscribe()
+            message = f"Successfully unsubscribed from r/{display_name}"
+        else:
+            sub.subscribe()
+            message = f"Successfully subscribed to r/{display_name}"
+
+        logger.info(message)
+
+        return {
+            "success": True,
+            "action": action,
+            "subreddit": display_name,
+            "message": message,
+            "metadata": {
+                "timestamp": time.time(),
+                "subscribers": getattr(sub, "subscribers", None)
+            }
+        }
+
+    except Exception as e:
+        logger.error(f"Error {action}ing r/{clean_name}: {e}")
+        if isinstance(e, (ValueError, RuntimeError)):
+            raise
+        raise RuntimeError(f"Failed to {action} r/{clean_name}: {e}") from e
+
+
+@mcp.tool()
+def get_submission_by_url(url: str, include_comments: bool = False, comment_replace_more_limit: int = 0) -> Dict[str, Any]:
     """Get a Reddit submission by its URL.
 
     Args:
         url: The URL of the Reddit submission to retrieve
+        include_comments: If True, load and return the full comment forest for the post
+        comment_replace_more_limit: Limit for replacing "MoreComments" objects (0 for none, None for all)
 
     Returns:
         Dictionary containing structured submission information with the following structure:
@@ -1080,6 +1307,7 @@ def get_submission_by_url(url: str) -> Dict[str, Any]:
             'media': Optional[Dict],  # Media information if any
             'preview': Optional[Dict],  # Preview information if available
             'awards': List[Dict],  # List of awards received
+            'comments': Optional[List[Dict]],  # present if include_comments is True
             'metadata': {
                 'fetched_at': float,  # Timestamp when data was fetched
                 'subreddit_id': str,  # Subreddit full ID
@@ -1113,7 +1341,7 @@ def get_submission_by_url(url: str) -> Dict[str, Any]:
         raise ValueError("URL must start with http:// or https://")
 
     try:
-        logger.info(f"Getting submission from URL: {url}")
+        logger.info(f"Getting submission from URL: {url} (include_comments={include_comments})")
 
         # Create submission from URL
         submission = manager.client.submission(url=url)
@@ -1183,6 +1411,25 @@ def get_submission_by_url(url: str) -> Dict[str, Any]:
                 for award in submission.all_awardings
             ]
 
+        # Add comments if requested
+        if include_comments:
+            try:
+                # Resolve all MoreComments to get the complete tree
+                submission.comments.replace_more(limit=comment_replace_more_limit)
+
+                top_level_comments = [
+                    c
+                    for c in submission.comments
+                    if isinstance(c, praw.models.Comment)
+                ]
+
+                submission_data["comments"] = [
+                    _serialize_comment_tree(c) for c in top_level_comments
+                ]
+            except Exception as comments_error:
+                logger.exception(f"Error loading comments for submission {submission.id}")
+                submission_data["comments"] = []
+
         # Add metadata
         submission_data["metadata"] = {
             "fetched_at": time.time(),
@@ -1228,11 +1475,13 @@ def get_submission_by_url(url: str) -> Dict[str, Any]:
 
 
 @mcp.tool()
-def get_submission_by_id(submission_id: str) -> Dict[str, Any]:
+def get_submission_by_id(submission_id: str, include_comments: bool = False, comment_replace_more_limit: int = 0) -> Dict[str, Any]:
     """Get a Reddit submission by its ID.
 
     Args:
         submission_id: The ID of the Reddit submission to retrieve (can be full URL or just ID)
+        include_comments: If True, load and return the full comment forest for the post
+        comment_replace_more_limit: Limit for replacing "MoreComments" objects (0 for none, None for all)
 
     Returns:
         Dictionary containing structured submission information with the following structure:
@@ -1262,6 +1511,7 @@ def get_submission_by_id(submission_id: str) -> Dict[str, Any]:
             'media': Optional[Dict],  # Media information if any
             'preview': Optional[Dict],  # Preview information if available
             'awards': List[Dict],  # List of awards received
+            'comments': Optional[List[Dict]],  # present if include_comments is True
             'metadata': {
                 'fetched_at': float,  # Timestamp when data was fetched
                 'subreddit_id': str,  # Subreddit full ID
@@ -1295,7 +1545,7 @@ def get_submission_by_id(submission_id: str) -> Dict[str, Any]:
     try:
         # Clean up the submission_id if it's a full URL or permalink
         clean_submission_id = _extract_reddit_id(submission_id)
-        logger.info(f"Getting submission with ID: {clean_submission_id}")
+        logger.info(f"Getting submission with ID: {clean_submission_id} (include_comments={include_comments})")
 
         # Create submission from ID
         submission = manager.client.submission(id=clean_submission_id)
@@ -1366,6 +1616,25 @@ def get_submission_by_id(submission_id: str) -> Dict[str, Any]:
                 }
                 for award in submission.all_awardings
             ]
+
+        # Add comments if requested
+        if include_comments:
+            try:
+                # Resolve all MoreComments to get the complete tree
+                submission.comments.replace_more(limit=comment_replace_more_limit)
+
+                top_level_comments = [
+                    c
+                    for c in submission.comments
+                    if isinstance(c, praw.models.Comment)
+                ]
+
+                submission_data["comments"] = [
+                    _serialize_comment_tree(c) for c in top_level_comments
+                ]
+            except Exception as comments_error:
+                logger.exception(f"Error loading comments for submission {submission.id}")
+                submission_data["comments"] = []
 
         # Add metadata
         submission_data["metadata"] = {
