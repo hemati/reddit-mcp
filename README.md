@@ -160,6 +160,176 @@ The server supports two levels of authentication:
    - Requires: All read-only credentials PLUS `username` and `password`
    - Allows: All read-only operations PLUS posting and commenting
 
+## Deployment to Google Cloud Run
+
+Deploy this MCP server to Google Cloud Run for remote access via streamable-http transport - **no Dockerfile needed!**
+
+### Prerequisites
+
+- **Google Cloud Account**: Create at [cloud.google.com](https://cloud.google.com)
+- **gcloud CLI**: Install the [Google Cloud SDK](https://cloud.google.com/sdk/docs/install)
+- **Reddit API Credentials**: Your `REDDIT_CLIENT_ID`, `REDDIT_CLIENT_SECRET`, and `REDDIT_USER_AGENT`
+
+### Quick Deployment (Source-Based)
+
+**Basic deployment (without authentication):**
+
+```bash
+# 1. Authenticate with Google Cloud
+gcloud auth login
+
+# 2. Set your project ID
+export PROJECT_ID=your-project-id
+gcloud config set project $PROJECT_ID
+
+# 3. Enable required APIs
+gcloud services enable run.googleapis.com cloudbuild.googleapis.com
+
+# 4. Deploy directly from source
+gcloud run deploy reddit-mcp \
+  --source . \
+  --platform managed \
+  --region us-central1 \
+  --allow-unauthenticated \
+  --set-env-vars MCP_TRANSPORT=streamable-http,REDDIT_CLIENT_ID=your_client_id,REDDIT_CLIENT_SECRET=your_client_secret,REDDIT_USER_AGENT=RedditMCPServer/1.0
+
+# 5. Get your service URL
+gcloud run services describe reddit-mcp --region us-central1 --format 'value(status.url)'
+```
+
+**Secure deployment (with Bearer Token authentication):**
+
+```bash
+# Generate a secure bearer token
+export BEARER_TOKEN=$(openssl rand -base64 32)
+echo "Your Bearer Token: $BEARER_TOKEN"
+# ⚠️ Save this token securely!
+
+# Deploy with Bearer Token
+gcloud run deploy reddit-mcp \
+  --source . \
+  --platform managed \
+  --region us-central1 \
+  --allow-unauthenticated \
+  --set-env-vars MCP_TRANSPORT=streamable-http,MCP_BEARER_TOKEN=$BEARER_TOKEN,REDDIT_CLIENT_ID=your_client_id,REDDIT_CLIENT_SECRET=your_client_secret,REDDIT_USER_AGENT=RedditMCPServer/1.0
+```
+
+Google Cloud Buildpacks automatically detects your Python app, installs dependencies, and builds the container.
+
+### MCP Client Configuration
+
+**Without authentication:**
+
+```json
+{
+  "mcpServers": {
+    "reddit": {
+      "transport": "streamable-http",
+      "url": "https://reddit-mcp-xxxxx.run.app/mcp"
+    }
+  }
+}
+```
+
+**With Bearer Token authentication:**
+
+```json
+{
+  "mcpServers": {
+    "reddit": {
+      "transport": "streamable-http",
+      "url": "https://reddit-mcp-xxxxx.run.app/mcp",
+      "headers": {
+        "Authorization": "Bearer your_generated_token_here"
+      }
+    }
+  }
+}
+```
+
+### Local Testing
+
+**Stdio mode (default, for local MCP clients):**
+
+```bash
+# Install dependencies
+uv pip install -e .
+
+# Set environment variables
+export REDDIT_CLIENT_ID=your_client_id
+export REDDIT_CLIENT_SECRET=your_client_secret
+export REDDIT_USER_AGENT=RedditMCPServer/1.0
+
+# Run with stdio (default)
+python server.py
+```
+
+**HTTP mode (for testing Cloud Run setup locally):**
+
+```bash
+# Install with auth support
+uv pip install -e ".[auth]"
+
+# Without Bearer Token
+export MCP_TRANSPORT=streamable-http
+export PORT=8080
+export REDDIT_CLIENT_ID=your_client_id
+export REDDIT_CLIENT_SECRET=your_client_secret
+export REDDIT_USER_AGENT=RedditMCPServer/1.0
+
+python server.py
+curl http://localhost:8080/mcp
+
+# With Bearer Token
+export MCP_BEARER_TOKEN=test-token-123
+python server.py
+curl -H "Authorization: Bearer test-token-123" http://localhost:8080/mcp
+```
+
+### Monitoring and Logs
+
+**View real-time logs:**
+
+```bash
+# Stream live logs from your deployed service
+gcloud run services logs tail reddit-mcp --region us-central1
+
+# View logs in Cloud Console
+# https://console.cloud.google.com/run/detail/us-central1/reddit-mcp/logs
+```
+
+**View logs for a specific time period:**
+
+```bash
+# Last 10 log entries
+gcloud run services logs read reddit-mcp --region us-central1 --limit 10
+
+# Logs from the last hour
+gcloud run services logs read reddit-mcp --region us-central1 --filter="timestamp>=\"$(date -u -d '1 hour ago' --rfc-3339=seconds)\""
+```
+
+**Check service status:**
+
+```bash
+# Get service details
+gcloud run services describe reddit-mcp --region us-central1
+
+# List all revisions
+gcloud run revisions list --service reddit-mcp --region us-central1
+```
+
+**Update environment variables:**
+
+```bash
+# Update a single environment variable
+gcloud run services update reddit-mcp --region us-central1 \
+  --update-env-vars MCP_BEARER_TOKEN=new_token_here
+
+# View current environment variables
+gcloud run services describe reddit-mcp --region us-central1 \
+  --format='value(spec.template.spec.containers[0].env)'
+```
+
 ## Contributing
 
 Contributions are welcome! Please feel free to submit a Pull Request.
