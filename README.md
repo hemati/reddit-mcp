@@ -17,7 +17,9 @@ To know more about MCP, Check this [video](https://www.youtube.com/watch?v=BwB1J
 ## Features
 
 - Get detailed user information with engagement analysis
+- Retrieve user comment and post history with flexible filtering
 - Fetch and analyze top posts from any subreddit
+- Search for posts across all of Reddit or within specific subreddits using search terms
 - Get comprehensive subreddit statistics and health metrics
 - View trending subreddits with growth patterns
 - Create strategic posts with timing recommendations
@@ -87,7 +89,10 @@ The server provides the following tools:
 #### Read-only Tools (require only client credentials):
 
 - `get_user_info(username)` - Get detailed user analysis with engagement insights
+- `get_user_comments(username, sort, time_filter, limit)` - Get a user's comment history with filtering options
+- `get_user_posts(username, sort, time_filter, limit)` - Get a user's post/submission history with filtering options
 - `get_top_posts(subreddit, time_filter, limit)` - Get and analyze top posts
+- `search_posts(query, subreddit, sort, time_filter, limit)` - Search for posts across Reddit or within a specific subreddit
 - `get_subreddit_stats(subreddit)` - Get comprehensive subreddit analysis
 - `get_trending_subreddits()` - Get list of trending subreddits
 - `get_submission_by_url(url)` - Get a Reddit submission by its URL
@@ -106,7 +111,12 @@ Here are some examples of what you can ask an AI assistant connected to this ser
 
 - "Who am I on Reddit?" or "Show my Reddit profile"
 - "Analyze u/spez's Reddit activity"
+- "Show me u/spez's recent comments"
+- "Get the top posts by u/poem_for_your_sprog from the past year"
+- "Show me the most controversial comments by u/username"
 - "Show me the top posts from r/Python this week"
+- "Search for posts about 'machine learning' across all of Reddit"
+- "Find posts about 'beginner tutorials' in r/learnprogramming from this month"
 - "Get statistics about r/AskReddit"
 - "What are the trending subreddits right now?"
 - "Create a post in r/Python about a new project"
