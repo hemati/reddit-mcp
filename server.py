@@ -25,6 +25,11 @@ class RedditClientManager:
     _is_read_only = True
 
     def __new__(cls) -> "RedditClientManager":
+        """Create or return the singleton instance of RedditClientManager.
+
+        Returns:
+            RedditClientManager: The singleton instance.
+        """
         if cls._instance is None:
             cls._instance = super(RedditClientManager, cls).__new__(cls)
             cls._instance._initialize_client()
@@ -120,6 +125,19 @@ def require_write_access(func: F) -> F:
 
     @functools.wraps(func)
     def wrapper(*args: Any, **kwargs: Any) -> Any:
+        """Wrapper that checks for write access before executing the function.
+
+        Args:
+            *args: Positional arguments passed to the wrapped function.
+            **kwargs: Keyword arguments passed to the wrapped function.
+
+        Returns:
+            Any: The result of the wrapped function.
+
+        Raises:
+            ValueError: If client is in read-only mode.
+            Exception: If user authentication is not available.
+        """
         reddit_manager = RedditClientManager()
         if reddit_manager.is_read_only:
             raise ValueError(
@@ -167,10 +185,25 @@ if bearer_token:
             """Middleware for validating Bearer token authentication."""
             
             def __init__(self, app, bearer_token: str):
+                """Initialize the Bearer token authentication middleware.
+
+                Args:
+                    app: The ASGI application to wrap.
+                    bearer_token: The expected Bearer token for authentication.
+                """
                 super().__init__(app)
                 self.bearer_token = bearer_token
             
             async def dispatch(self, request: Request, call_next):
+                """Process each request and validate the Bearer token.
+
+                Args:
+                    request: The incoming HTTP request.
+                    call_next: The next middleware or route handler.
+
+                Returns:
+                    Response: JSON error response (401/403) or the response from call_next.
+                """
                 # Get Authorization header
                 auth_header = request.headers.get("Authorization")
                 
