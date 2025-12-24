@@ -2378,8 +2378,6 @@ def upvote_post(post_id: str) -> Dict[str, Any]:
         # Upvote the post
         try:
             submission.upvote()
-            # Refresh to get updated score (PRAW caches attributes)
-            submission.refresh()
             logger.info(f"Post upvoted successfully: {clean_post_id}")
 
             return {
@@ -2475,8 +2473,6 @@ def upvote_comment(comment_id: str) -> Dict[str, Any]:
         # Upvote the comment
         try:
             comment.upvote()
-            # Refresh to get updated score (PRAW caches attributes)
-            comment.refresh()
             logger.info(f"Comment upvoted successfully: {clean_comment_id}")
 
             return {
